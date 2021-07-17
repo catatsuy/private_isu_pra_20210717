@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
@@ -70,6 +71,66 @@ type Comment struct {
 	CreatedAt time.Time `db:"created_at"`
 	User      User
 }
+type userCacheSlice struct {
+	// Setが多いならsync.Mutex
+	sync.RWMutex
+	items map[int]User
+}
+
+func NewUserCacheSlice() *userCacheSlice {
+	m := make(map[int]User)
+	c := &userCacheSlice{
+		items: m,
+	}
+	return c
+}
+
+func (c *userCacheSlice) Init() {
+	c.Lock()
+	var users []User
+	m := make(map[int]User)
+	c.items = m
+
+	err := db.Select(&users, "SELECT * FROM `users`")
+	if err != nil {
+		return
+	}
+
+	for _, v := range users {
+		m[v.ID] = v
+	}
+	c.items = m
+	c.Unlock()
+}
+
+func (c *userCacheSlice) Set(key int, value User) {
+	c.Lock()
+	c.items[key] = value
+	c.Unlock()
+}
+
+func (c *userCacheSlice) Get(key int) (User, bool) {
+	c.RLock()
+	v, found := c.items[key]
+	c.RUnlock()
+	return v, found
+}
+
+func (c *userCacheSlice) BanCachedUser(key int) {
+	c.Lock()
+	prev := c.items[key]
+	c.items[key] = User{
+		ID:          prev.ID,
+		AccountName: prev.AccountName,
+		Passhash:    prev.Passhash,
+		Authority:   prev.Authority,
+		DelFlg:      1,
+		CreatedAt:   prev.CreatedAt,
+	}
+	c.Unlock()
+}
+
+var userCache = NewUserCacheSlice()
 
 func init() {
 	memdAddr := os.Getenv("ISUCONP_MEMCACHED_ADDRESS")
@@ -93,6 +154,8 @@ func dbInitialize() {
 	for _, sql := range sqls {
 		db.Exec(sql)
 	}
+
+	userCache.Init()
 }
 
 func tryLogin(accountName, password string) *User {
@@ -154,7 +217,6 @@ func getSessionUser(r *http.Request) User {
 	}
 
 	u := User{}
-
 	err := db.Get(&u, "SELECT * FROM `users` WHERE `id` = ?", uid)
 	if err != nil {
 		return User{}
@@ -211,9 +273,15 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		comments := commentsPostID[p.ID]
 
 		for i := 0; i < len(comments); i++ {
-			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if err != nil {
-				return nil, err
+			user, found := userCache.Get(comments[i].UserID)
+			if found {
+				comments[i].User = user
+			} else {
+				err = db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
+				if err != nil {
+					return nil, err
+				}
+				userCache.Set(comments[i].UserID, comments[i].User)
 			}
 		}
 
@@ -224,9 +292,15 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 
 		p.Comments = comments
 
-		err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
-		if err != nil {
-			return nil, err
+		user, found := userCache.Get(p.UserID)
+		if found {
+			p.User = user
+		} else {
+			err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
+			if err != nil {
+				return nil, err
+			}
+			userCache.Set(p.UserID, p.User)
 		}
 
 		p.CSRFToken = csrfToken
@@ -818,6 +892,8 @@ func postAdminBanned(w http.ResponseWriter, r *http.Request) {
 
 	for _, id := range r.Form["uid[]"] {
 		db.Exec(query, 1, id)
+		intId, _ := strconv.Atoi(id)
+		userCache.BanCachedUser(intId)
 	}
 
 	http.Redirect(w, r, "/admin/banned", http.StatusFound)
@@ -897,6 +973,8 @@ func main() {
 		log.Fatalf("Failed to connect to DB: %s.", err.Error())
 	}
 	defer db.Close()
+
+	userCache.Init()
 
 	maxConns := os.Getenv("DB_MAXOPENCONNS")
 	maxConnsInt := 25
