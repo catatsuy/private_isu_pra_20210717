@@ -22,6 +22,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
+	proxy "github.com/shogo82148/go-sql-proxy"
 	goji "goji.io"
 	"goji.io/pat"
 	"goji.io/pattern"
@@ -843,7 +844,7 @@ func main() {
 	}
 
 	dsn := fmt.Sprintf(
-		"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=true&loc=Local",
+		"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=true&loc=Local&interpolateParams=true",
 		user,
 		password,
 		host,
@@ -851,11 +852,47 @@ func main() {
 		dbname,
 	)
 
-	db, err = sqlx.Open("mysql", dsn)
+	var isDev bool
+	if os.Getenv("DEV") == "1" {
+		isDev = true
+	}
+
+	if isDev {
+		proxy.RegisterTracer()
+
+		db, err = sqlx.Open("mysql:trace", dsn)
+	} else {
+		db, err = sqlx.Open("mysql", dsn)
+	}
+
 	if err != nil {
 		log.Fatalf("Failed to connect to DB: %s.", err.Error())
 	}
 	defer db.Close()
+
+	maxConns := os.Getenv("DB_MAXOPENCONNS")
+	maxConnsInt := 25
+	if maxConns != "" {
+		maxConnsInt, err = strconv.Atoi(maxConns)
+		if err != nil {
+			panic(err)
+		}
+	}
+	db.SetMaxOpenConns(maxConnsInt)
+	db.SetMaxIdleConns(maxConnsInt * 2)
+	// db.SetConnMaxLifetime(time.Minute * 2)
+	db.SetConnMaxIdleTime(time.Minute * 2)
+
+	for {
+		err := db.Ping()
+		// _, err := db.Exec("SELECT 42")
+		if err == nil {
+			break
+		}
+		log.Print(err)
+		time.Sleep(time.Second * 2)
+	}
+	log.Print("DB ready!")
 
 	mux := goji.NewMux()
 
