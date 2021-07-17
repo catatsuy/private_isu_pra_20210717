@@ -70,34 +70,51 @@ type Comment struct {
 	CreatedAt time.Time `db:"created_at"`
 	User      User
 }
-type cacheSlice struct {
+type userCacheSlice struct {
 	// Setが多いならsync.Mutex
 	sync.RWMutex
 	items map[int]User
 }
 
-func NewCacheSlice() *cacheSlice {
+func NewUserCacheSlice() *userCacheSlice {
 	m := make(map[int]User)
-	c := &cacheSlice{
+	c := &userCacheSlice{
 		items: m,
 	}
 	return c
 }
 
-func (c *cacheSlice) Set(key int, value User) {
+func InitUserCacheSlice() *userCacheSlice {
+	var users []User
+	err := db.Select(&users, "SELECT * FROM `users`")
+	if err != nil {
+		return NewUserCacheSlice()
+	}
+
+	m := make(map[int]User)
+	for _, v := range users {
+		m[v.ID] = v
+	}
+	c := &userCacheSlice{
+		items: m,
+	}
+	return c
+}
+
+func (c *userCacheSlice) Set(key int, value User) {
 	c.Lock()
 	c.items[key] = value
 	c.Unlock()
 }
 
-func (c *cacheSlice) Get(key int) (User, bool) {
+func (c *userCacheSlice) Get(key int) (User, bool) {
 	c.RLock()
 	v, found := c.items[key]
 	c.RUnlock()
 	return v, found
 }
 
-var mCache = NewCacheSlice()
+var userCache *userCacheSlice
 
 func init() {
 	memdAddr := os.Getenv("ISUCONP_MEMCACHED_ADDRESS")
@@ -122,7 +139,7 @@ func dbInitialize() {
 		db.Exec(sql)
 	}
 
-	mCache = NewCacheSlice()
+	userCache = InitUserCacheSlice()
 }
 
 func tryLogin(accountName, password string) *User {
@@ -185,7 +202,7 @@ func getSessionUser(r *http.Request) User {
 
 	u := User{}
 
-	user, found := mCache.Get(uid.(int))
+	user, found := userCache.Get(uid.(int))
 	if found {
 		u = user
 	} else {
@@ -193,7 +210,7 @@ func getSessionUser(r *http.Request) User {
 		if err != nil {
 			return User{}
 		}
-		mCache.Set(uid.(int), u)
+		userCache.Set(uid.(int), u)
 	}
 
 	return u
@@ -232,7 +249,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		}
 
 		for i := 0; i < len(comments); i++ {
-			user, found := mCache.Get(comments[i].UserID)
+			user, found := userCache.Get(comments[i].UserID)
 			if found {
 				comments[i].User = user
 			} else {
@@ -240,7 +257,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 				if err != nil {
 					return nil, err
 				}
-				mCache.Set(comments[i].UserID, comments[i].User)
+				userCache.Set(comments[i].UserID, comments[i].User)
 			}
 		}
 
@@ -251,7 +268,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 
 		p.Comments = comments
 
-		user, found := mCache.Get(p.UserID)
+		user, found := userCache.Get(p.UserID)
 		if found {
 			p.User = user
 		} else {
@@ -259,7 +276,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			if err != nil {
 				return nil, err
 			}
-			mCache.Set(p.UserID, p.User)
+			userCache.Set(p.UserID, p.User)
 		}
 
 		p.CSRFToken = csrfToken
@@ -918,6 +935,8 @@ func main() {
 		log.Fatalf("Failed to connect to DB: %s.", err.Error())
 	}
 	defer db.Close()
+
+	userCache = InitUserCacheSlice()
 
 	maxConns := os.Getenv("DB_MAXOPENCONNS")
 	maxConnsInt := 25
