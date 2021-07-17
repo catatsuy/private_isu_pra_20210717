@@ -51,16 +51,17 @@ type User struct {
 }
 
 type Post struct {
-	ID           int       `db:"id"`
-	UserID       int       `db:"user_id"`
-	Imgdata      []byte    `db:"imgdata"`
-	Body         string    `db:"body"`
-	Mime         string    `db:"mime"`
-	CreatedAt    time.Time `db:"created_at"`
-	CommentCount int
-	Comments     []Comment
-	User         User
-	CSRFToken    string
+	ID                   int       `db:"id"`
+	UserID               int       `db:"user_id"`
+	Imgdata              []byte    `db:"imgdata"`
+	Body                 string    `db:"body"`
+	Mime                 string    `db:"mime"`
+	CreatedAt            time.Time `db:"created_at"`
+	CommentCount         int       `db:"comment_count"`
+	OriginalCommentCount int       `db:"original_comment_count"`
+	Comments             []Comment
+	User                 User
+	CSRFToken            string
 }
 
 type Comment struct {
@@ -149,6 +150,7 @@ func dbInitialize() {
 		"DELETE FROM comments WHERE id > 100000",
 		"UPDATE users SET del_flg = 0",
 		"UPDATE users SET del_flg = 1 WHERE id % 50 = 0",
+		"UPDATE posts SET posts.comment_count = posts.original_comment_count WHERE posts.comment_count != posts.original_comment_count",
 	}
 
 	for _, sql := range sqls {
@@ -265,11 +267,6 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	}
 
 	for _, p := range results {
-		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
-		if err != nil {
-			return nil, err
-		}
-
 		comments := commentsPostID[p.ID]
 
 		for i := 0; i < len(comments); i++ {
@@ -480,7 +477,7 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 
 	results := []Post{}
 
-	err := db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` ORDER BY `id` DESC LIMIT 30")
+	err := db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at`, `comment_count` FROM `posts` ORDER BY `id` DESC LIMIT 30")
 	if err != nil {
 		log.Print(err)
 		return
