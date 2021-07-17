@@ -216,16 +216,9 @@ func getSessionUser(r *http.Request) User {
 	}
 
 	u := User{}
-
-	user, found := userCache.Get(uid.(int))
-	if found {
-		u = user
-	} else {
-		err := db.Get(&u, "SELECT * FROM `users` WHERE `id` = ?", uid)
-		if err != nil {
-			return User{}
-		}
-		userCache.Set(uid.(int), u)
+	err := db.Get(&u, "SELECT * FROM `users` WHERE `id` = ?", uid)
+	if err != nil {
+		return User{}
 	}
 
 	return u
