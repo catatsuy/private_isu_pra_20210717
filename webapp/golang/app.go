@@ -178,21 +178,36 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
 	var posts []Post
 
+	pids := make([]interface{}, 0, len(results))
+	qParts := ""
+
+	for _, p := range results {
+		pids = append(pids, p.ID)
+		qParts += ",?"
+	}
+
+	query := "SELECT `id`, `post_id`, `user_id`, `comment`, `created_at` FROM (SELECT `id`, `post_id`, `user_id`, `comment`, `created_at`,row_number() over (partition by `post_id` ORDER BY `id` DESC) as `rank` FROM `comments` WHERE `post_id` IN (" + qParts[1:] + ")) AS co WHERE `rank` <= 3"
+
+	comments := make([]Comment, 0, len(results)*3)
+
+	err := db.Select(&comments, query, pids...)
+	if err != nil {
+		return nil, err
+	}
+
+	commentsPostID := make(map[int][]Comment)
+
+	for _, c := range comments {
+		commentsPostID[c.PostID] = append(commentsPostID[c.PostID], c)
+	}
+
 	for _, p := range results {
 		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
 		if err != nil {
 			return nil, err
 		}
 
-		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `id` DESC"
-		if !allComments {
-			query += " LIMIT 3"
-		}
-		var comments []Comment
-		err = db.Select(&comments, query, p.ID)
-		if err != nil {
-			return nil, err
-		}
+		comments := commentsPostID[p.ID]
 
 		for i := 0; i < len(comments); i++ {
 			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
