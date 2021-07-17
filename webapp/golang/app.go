@@ -857,6 +857,30 @@ func main() {
 	}
 	defer db.Close()
 
+	maxConns := os.Getenv("DB_MAXOPENCONNS")
+	maxConnsInt := 25
+	if maxConns != "" {
+		maxConnsInt, err = strconv.Atoi(maxConns)
+		if err != nil {
+			panic(err)
+		}
+	}
+	db.SetMaxOpenConns(maxConnsInt)
+	db.SetMaxIdleConns(maxConnsInt * 2)
+	// db.SetConnMaxLifetime(time.Minute * 2)
+	db.SetConnMaxIdleTime(time.Minute * 2)
+
+	for {
+		err := db.Ping()
+		// _, err := db.Exec("SELECT 42")
+		if err == nil {
+			break
+		}
+		log.Print(err)
+		time.Sleep(time.Second * 2)
+	}
+	log.Print("DB ready!")
+
 	mux := goji.NewMux()
 
 	mux.HandleFunc(pat.Get("/initialize"), getInitialize)
