@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
@@ -69,6 +70,34 @@ type Comment struct {
 	CreatedAt time.Time `db:"created_at"`
 	User      User
 }
+type cacheSlice struct {
+	// Setが多いならsync.Mutex
+	sync.RWMutex
+	items map[int]User
+}
+
+func NewCacheSlice() *cacheSlice {
+	m := make(map[int]User)
+	c := &cacheSlice{
+		items: m,
+	}
+	return c
+}
+
+func (c *cacheSlice) Set(key int, value User) {
+	c.Lock()
+	c.items[key] = value
+	c.Unlock()
+}
+
+func (c *cacheSlice) Get(key int) (User, bool) {
+	c.RLock()
+	v, found := c.items[key]
+	c.RUnlock()
+	return v, found
+}
+
+var mCache = NewCacheSlice()
 
 func init() {
 	memdAddr := os.Getenv("ISUCONP_MEMCACHED_ADDRESS")
@@ -92,6 +121,8 @@ func dbInitialize() {
 	for _, sql := range sqls {
 		db.Exec(sql)
 	}
+
+	mCache = NewCacheSlice()
 }
 
 func tryLogin(accountName, password string) *User {
@@ -154,9 +185,15 @@ func getSessionUser(r *http.Request) User {
 
 	u := User{}
 
-	err := db.Get(&u, "SELECT * FROM `users` WHERE `id` = ?", uid)
-	if err != nil {
-		return User{}
+	user, found := mCache.Get(uid.(int))
+	if found {
+		u = user
+	} else {
+		err := db.Get(&u, "SELECT * FROM `users` WHERE `id` = ?", uid)
+		if err != nil {
+			return User{}
+		}
+		mCache.Set(uid.(int), u)
 	}
 
 	return u
@@ -195,9 +232,15 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		}
 
 		for i := 0; i < len(comments); i++ {
-			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if err != nil {
-				return nil, err
+			user, found := mCache.Get(comments[i].UserID)
+			if found {
+				comments[i].User = user
+			} else {
+				err = db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
+				if err != nil {
+					return nil, err
+				}
+				mCache.Set(comments[i].UserID, comments[i].User)
 			}
 		}
 
@@ -208,9 +251,15 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 
 		p.Comments = comments
 
-		err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
-		if err != nil {
-			return nil, err
+		user, found := mCache.Get(p.UserID)
+		if found {
+			p.User = user
+		} else {
+			err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
+			if err != nil {
+				return nil, err
+			}
+			mCache.Set(p.UserID, p.User)
 		}
 
 		p.CSRFToken = csrfToken
