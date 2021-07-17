@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -632,16 +633,20 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ext := ""
 	mime := ""
 	if file != nil {
 		// 投稿のContent-Typeからファイルのタイプを決定する
 		contentType := header.Header["Content-Type"][0]
 		if strings.Contains(contentType, "jpeg") {
 			mime = "image/jpeg"
+			ext = "jpg"
 		} else if strings.Contains(contentType, "png") {
 			mime = "image/png"
+			ext = "png"
 		} else if strings.Contains(contentType, "gif") {
 			mime = "image/gif"
+			ext = "gif"
 		} else {
 			session := getSession(r)
 			session.Values["notice"] = "投稿できる画像形式はjpgとpngとgifだけです"
@@ -683,6 +688,14 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	pid, err := result.LastInsertId()
 	if err != nil {
 		log.Print(err)
+		return
+	}
+
+	// 画像ファイルをpublic/imageに出力
+	outfile := "/home/isucon/private_isu/webapp/public/image/" + strconv.FormatInt(pid, 10) + "." + ext
+	outfileError := ioutil.WriteFile(outfile, filedata, 0644)
+	if outfileError != nil {
+		log.Print(outfileError)
 		return
 	}
 
