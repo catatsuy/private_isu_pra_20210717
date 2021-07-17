@@ -84,21 +84,22 @@ func NewUserCacheSlice() *userCacheSlice {
 	return c
 }
 
-func InitUserCacheSlice() *userCacheSlice {
+func (c *userCacheSlice) Init() {
+	c.Lock()
 	var users []User
+	m := make(map[int]User)
+	c.items = m
+
 	err := db.Select(&users, "SELECT * FROM `users`")
 	if err != nil {
-		return NewUserCacheSlice()
+		return
 	}
 
-	m := make(map[int]User)
 	for _, v := range users {
 		m[v.ID] = v
 	}
-	c := &userCacheSlice{
-		items: m,
-	}
-	return c
+	c.items = m
+	c.Unlock()
 }
 
 func (c *userCacheSlice) Set(key int, value User) {
@@ -114,7 +115,21 @@ func (c *userCacheSlice) Get(key int) (User, bool) {
 	return v, found
 }
 
-var userCache *userCacheSlice
+func (c *userCacheSlice) BanCachedUser(key int) {
+	c.Lock()
+	prev := c.items[key]
+	c.items[key] = User{
+		ID:          prev.ID,
+		AccountName: prev.AccountName,
+		Passhash:    prev.Passhash,
+		Authority:   prev.Authority,
+		DelFlg:      1,
+		CreatedAt:   prev.CreatedAt,
+	}
+	c.Unlock()
+}
+
+var userCache = NewUserCacheSlice()
 
 func init() {
 	memdAddr := os.Getenv("ISUCONP_MEMCACHED_ADDRESS")
@@ -139,7 +154,7 @@ func dbInitialize() {
 		db.Exec(sql)
 	}
 
-	userCache = InitUserCacheSlice()
+	userCache.Init()
 }
 
 func tryLogin(accountName, password string) *User {
@@ -856,6 +871,8 @@ func postAdminBanned(w http.ResponseWriter, r *http.Request) {
 
 	for _, id := range r.Form["uid[]"] {
 		db.Exec(query, 1, id)
+		intId, _ := strconv.Atoi(id)
+		userCache.BanCachedUser(intId)
 	}
 
 	http.Redirect(w, r, "/admin/banned", http.StatusFound)
@@ -936,7 +953,7 @@ func main() {
 	}
 	defer db.Close()
 
-	userCache = InitUserCacheSlice()
+	userCache.Init()
 
 	maxConns := os.Getenv("DB_MAXOPENCONNS")
 	maxConnsInt := 25
